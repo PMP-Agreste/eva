@@ -799,17 +799,4 @@ export function DashboardPage() {
           </Card>
         </Grid>
       </Grid>
-
-      <Card>
-        <CardHeader title="Próximos incrementos" subheader="Se você confirmar, eu já entrego o próximo arquivo completo" />
-        <CardContent>
-          <Stack spacing={1} sx={{ color: 'text.secondary' }}>
-            <Typography variant="body2">1) Tela “Alertas” com filtros e exportação (CSV) para auditoria.</Typography>
-            <Typography variant="body2">2) Página “Mapa” (Leaflet) com Cluster + Heatmap + filtros por período/guarnição/risco.</Typography>
-            <Typography variant="body2">3) Índices Firestore recomendados (quando surgir “needs index”).</Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-    </Stack>
-  );
 }
