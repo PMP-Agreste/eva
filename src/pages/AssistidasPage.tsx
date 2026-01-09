@@ -65,9 +65,6 @@ export function AssistidasPage() {
 
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', mb: 2, flexWrap: 'wrap' }}>
           <TextField label="Buscar (nome, processo, id)" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ minWidth: 320 }} />
-          <Typography variant="body2" color="text.secondary">
-            Se aparecer “insufficient permissions”, verifique `users&lt;uid&gt;.ativo` e `role`.
-          </Typography>
         </Box>
 
         <Box sx={{ overflow: 'auto' }}>
