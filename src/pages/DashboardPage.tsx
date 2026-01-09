@@ -811,5 +811,6 @@ export function DashboardPage() {
         </CardContent>
       </Card>
     </Stack>
+  );
 
 }
