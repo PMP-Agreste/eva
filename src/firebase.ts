@@ -4,12 +4,12 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID as string,
+  apiKey: "AIzaSyBDidrDBQC5dvRJGGKMtNffrV867dNgDK8",
+  authDomain: "patrulha-maria-da-penha.firebaseapp.com",
+  projectId: "patrulha-maria-da-penha",
+  storageBucket: "patrulha-maria-da-penha.firebasestorage.app",
+  messagingSenderId: "698468798170",
+  appId: "1:698468798170:web:fc881c819ead0e34c11fe3"
 };
 
 export const firebaseApp = initializeApp(firebaseConfig);
