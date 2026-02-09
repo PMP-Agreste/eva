@@ -17,6 +17,7 @@ import PeopleIcon from '@mui/icons-material/People';
 import EventNoteIcon from '@mui/icons-material/EventNote';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import MapIcon from '@mui/icons-material/Map';
+import AssessmentOutlinedIcon from '@mui/icons-material/AssessmentOutlined';
 import LogoutIcon from '@mui/icons-material/Logout';
 import { useAuth } from '../auth/useAuth';
 
@@ -29,6 +30,10 @@ const nav: NavItem[] = [
   { label: 'Assistidas', to: '/assistidas', icon: <PeopleIcon /> },
   { label: 'Agenda planejada', to: '/agenda', icon: <EventNoteIcon /> },
   { label: 'Visitas', to: '/visitas', icon: <FactCheckIcon /> },
+
+  // ✅ NOVO ITEM: Relatório por período
+  { label: 'Relatório', to: '/relatorios/periodo', icon: <AssessmentOutlinedIcon /> },
+
   { label: 'Mapa', to: '/mapa', icon: <MapIcon /> },
 ];
 
