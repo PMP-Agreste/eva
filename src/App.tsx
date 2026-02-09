@@ -12,6 +12,7 @@ import { PendingActivationPage } from './pages/PendingActivationPage';
 import { UnauthorizedPage } from './pages/UnauthorizedPage';
 import { ProfileNotFoundPage } from './pages/ProfileNotFoundPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import RelatorioPeriodoPage from "./pages/RelatorioPeriodoPage";
 
 export function App() {
   return (
@@ -29,6 +30,7 @@ export function App() {
 
       <Route path="/agenda" element={<RequireGestor><AppShell><AgendaPlanejadaPage /></AppShell></RequireGestor>} />
       <Route path="/visitas" element={<RequireGestor><AppShell><VisitasPage /></AppShell></RequireGestor>} />
+      <Route path="/relatorios/periodo" element={<RequireGestor><AppShell><RelatorioPeriodoPage /></AppShell></RequireGestor>} />
 
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
