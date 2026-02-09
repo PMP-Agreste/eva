@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -10,66 +9,69 @@ import {
   Chip,
   Divider,
   Grid,
+  MenuItem,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { collection, getDocs, limit, orderBy, query, Timestamp, where } from "firebase/firestore";
+import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "../firebase";
-import type { AgendaPlanejada, Visita } from "../types/models";
 
-const GUARNICOES = ["PMP Alfa", "PMP Bravo", "PMP Charlie", "PMP Delta"] as const;
-type Guarnicao = (typeof GUARNICOES)[number];
-
-type AgendaRow = AgendaPlanejada & {
-  idAssistida?: string;
-  dataDia?: string; // "YYYY-MM-DD"
+type Acao = {
+  tipo?: string | null;
+  quantidade?: number | null;
+  detalhe?: string | null;
 };
 
-type VisitaRow = Visita & {
+type ResumoAuto = {
+  agendaNaoRealizada?: number;
+  agendaPlanejada?: number;
+  agendaRealizada?: number;
+  assistidasUnicas?: number;
+  descumprimentos?: number;
+  visitasTotal?: number;
+};
+
+type RelatorioServico = {
   id: string;
-  dataHora?: unknown; // number | Timestamp
-  guarnicao?: unknown;
-  idAssistida?: unknown;
-  houveDescumprimento?: unknown;
+
+  // datas / chaves
+  dataDia?: string; // "YYYY-MM-DD"
+  dataServico?: number; // epoch ms
+  guarnicao?: string;
+  guarnicaoKey?: string; // "PMP_BRAVO"
+
+  // identificação
+  comandanteGuarnicao?: string;
+  efetivo?: string;
+  prefixoViatura?: string;
+  placaViatura?: string;
+  kmInicial?: number | null;
+  kmFinal?: number | null;
+
+  // texto livre
+  observacoesGerais?: string | null;
+  pendenciasProximoServico?: string | null;
+  problemasOperacionais?: string | null;
+
+  // arrays / maps
+  acoes?: Acao[];
+  eventos?: any[];
+
+  // resumo
+  resumoAuto?: ResumoAuto;
+  resumoConfere?: boolean;
+  justificativaDivergencia?: string | null;
+
+  // meta
+  criadoEm?: number;
+  atualizadoEm?: number;
 };
 
-type Metric = {
-  visitasTotal: number;
-  assistidasUnicas: number;
-  descumprimentos: number;
-  agendaPlanejada: number;
-  agendaRealizada: number;
-  agendaNaoRealizada: number;
-};
-
-function safeStr(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  return String(v);
-}
-
-function stripDiacritics(s: string) {
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-
-function normalizeGuarnicaoKeyFromAny(v: unknown): Guarnicao | null {
-  const raw = stripDiacritics(safeStr(v)).toLowerCase().trim().replace(/\s+/g, " ");
-  if (!raw) return null;
-  // aceita "pmp alfa", "alfa", "alpha", etc.
-  const hasPmp = raw.includes("pmp") || raw.includes("patrulha") || raw.includes("maria");
-  const s = raw.replace(/[^a-z0-9 ]/g, " ");
-  if (s.includes("alfa") || s.includes("alpha")) return "PMP Alfa";
-  if (s.includes("bravo")) return "PMP Bravo";
-  if (s.includes("charlie") || s.includes("charly")) return "PMP Charlie";
-  if (s.includes("delta")) return "PMP Delta";
-  // fallback: se veio "PMP Alfa" bonitinho
-  if (hasPmp) {
-    if (s.includes("a")) return null;
-  }
-  // tenta match exato ignorando case/acentos
-  const exact = GUARNICOES.find((g) => stripDiacritics(g).toLowerCase() === raw);
-  return exact ?? null;
-}
+const GUARNICOES_KEYS = ["PMP_ALFA", "PMP_BRAVO", "PMP_CHARLIE", "PMP_DELTA"] as const;
 
 function ymd(d: Date): string {
   const yyyy = d.getFullYear();
@@ -78,102 +80,22 @@ function ymd(d: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function startOfDayMs(d: Date): number {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x.getTime();
+function safeNum(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function endOfDayMs(d: Date): number {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x.getTime();
+function safeStr(v: any): string {
+  if (v === null || v === undefined) return "";
+  return String(v);
 }
 
-function parseMillis(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (v && typeof v === "object" && "toMillis" in (v as any) && typeof (v as any).toMillis === "function") {
-    const n = (v as any).toMillis();
-    return typeof n === "number" && Number.isFinite(n) ? n : null;
-  }
-  return null;
+function fmtGuKey(k: string) {
+  return k.replaceAll("_", " ").trim();
 }
 
-function uniqById<T extends { id: string }>(items: T[]): T[] {
-  const m = new Map<string, T>();
-  for (const it of items) m.set(it.id, it);
-  return Array.from(m.values());
-}
-
-async function fetchAgendasByDataDiaRange(startKey: string, endKey: string): Promise<AgendaRow[]> {
-  const q = query(
-    collection(db, "agendas_planejadas"),
-    where("dataDia", ">=", startKey),
-    where("dataDia", "<=", endKey),
-    orderBy("dataDia", "asc"),
-    limit(20000)
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) } as AgendaRow));
-}
-
-async function fetchVisitasBetween(startMs: number, endMs: number): Promise<VisitaRow[]> {
-  const col = collection(db, "visitas");
-
-  // number
-  const qNum = query(
-    col,
-    where("dataHora", ">=", startMs),
-    where("dataHora", "<=", endMs),
-    orderBy("dataHora", "desc"),
-    limit(25000)
-  );
-
-  // Timestamp
-  const qTs = query(
-    col,
-    where("dataHora", ">=", Timestamp.fromMillis(startMs)),
-    where("dataHora", "<=", Timestamp.fromMillis(endMs)),
-    orderBy("dataHora", "desc"),
-    limit(25000)
-  );
-
-  const results = await Promise.allSettled([getDocs(qNum), getDocs(qTs)]);
-  const all: VisitaRow[] = [];
-
-  for (const r of results) {
-    if (r.status !== "fulfilled") continue;
-    all.push(...r.value.docs.map((d) => ({ id: d.id, ...(d.data() as object) } as VisitaRow)));
-  }
-
-  return uniqById(all);
-}
-
-function KPICard(props: { title: string; value: ReactNode; helper?: ReactNode; action?: ReactNode }) {
-  return (
-    <Card>
-      <CardHeader
-        titleTypographyProps={{ variant: "body2", color: "text.secondary" }}
-        title={props.title}
-        action={props.action}
-        sx={{ pb: 0.5 }}
-      />
-      <CardContent sx={{ pt: 0 }}>
-        <Typography variant="h5" sx={{ fontWeight: 900, lineHeight: 1.2 }}>
-          {props.value}
-        </Typography>
-        {props.helper ? (
-          <Typography variant="caption" color="text.secondary">
-            {props.helper}
-          </Typography>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-function emptyMetric(): Metric {
-  return {
+function sumResumo(rows: RelatorioServico[]) {
+  const out = {
     visitasTotal: 0,
     assistidasUnicas: 0,
     descumprimentos: 0,
@@ -181,229 +103,173 @@ function emptyMetric(): Metric {
     agendaRealizada: 0,
     agendaNaoRealizada: 0,
   };
+
+  for (const r of rows) {
+    const s = r.resumoAuto ?? {};
+    out.visitasTotal += safeNum(s.visitasTotal);
+    out.assistidasUnicas += safeNum(s.assistidasUnicas);
+    out.descumprimentos += safeNum(s.descumprimentos);
+    out.agendaPlanejada += safeNum(s.agendaPlanejada);
+    out.agendaRealizada += safeNum(s.agendaRealizada);
+    out.agendaNaoRealizada += safeNum(s.agendaNaoRealizada);
+  }
+
+  return out;
 }
 
-function addMetric(a: Metric, b: Metric): Metric {
-  return {
-    visitasTotal: a.visitasTotal + b.visitasTotal,
-    assistidasUnicas: a.assistidasUnicas + b.assistidasUnicas,
-    descumprimentos: a.descumprimentos + b.descumprimentos,
-    agendaPlanejada: a.agendaPlanejada + b.agendaPlanejada,
-    agendaRealizada: a.agendaRealizada + b.agendaRealizada,
-    agendaNaoRealizada: a.agendaNaoRealizada + b.agendaNaoRealizada,
-  };
+function aggregateAcoes(rows: RelatorioServico[]) {
+  const map = new Map<string, { tipo: string; quantidade: number; exemplosDetalhe: string[] }>();
+
+  for (const r of rows) {
+    for (const a of r.acoes ?? []) {
+      const tipo = safeStr(a?.tipo).trim();
+      if (!tipo) continue;
+
+      const qtd = safeNum(a?.quantidade);
+      const det = safeStr(a?.detalhe).trim();
+
+      if (!map.has(tipo)) map.set(tipo, { tipo, quantidade: 0, exemplosDetalhe: [] });
+      const item = map.get(tipo)!;
+      item.quantidade += qtd;
+
+      if (det) {
+        // guarda só alguns exemplos para não poluir
+        if (item.exemplosDetalhe.length < 6 && !item.exemplosDetalhe.includes(det)) {
+          item.exemplosDetalhe.push(det);
+        }
+      }
+    }
+  }
+
+  // ordena por quantidade desc
+  return Array.from(map.values()).sort((a, b) => b.quantidade - a.quantidade);
+}
+
+async function fetchRelatoriosByPeriodo(startYmd: string, endYmd: string): Promise<RelatorioServico[]> {
+  const q = query(
+    collection(db, "relatorios_servico"),
+    where("dataDia", ">=", startYmd),
+    where("dataDia", "<=", endYmd),
+    orderBy("dataDia", "asc"),
+    limit(5000)
+  );
+
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as RelatorioServico[];
 }
 
 export default function RelatorioPeriodoPage() {
-  // default: últimos 7 dias
+  // defaults: últimos 7 dias
   const [startStr, setStartStr] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 6);
     return ymd(d);
   });
   const [endStr, setEndStr] = useState(() => ymd(new Date()));
+  const [guKey, setGuKey] = useState<string>("TODAS");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [agendas, setAgendas] = useState<AgendaRow[]>([]);
-  const [visitas, setVisitas] = useState<VisitaRow[]>([]);
+  const [rows, setRows] = useState<RelatorioServico[]>([]);
 
-  const startDate = useMemo(() => new Date(`${startStr}T00:00:00`), [startStr]);
-  const endDate = useMemo(() => new Date(`${endStr}T00:00:00`), [endStr]);
-
-  const startMs = useMemo(() => startOfDayMs(startDate), [startDate]);
-  const endMs = useMemo(() => endOfDayMs(endDate), [endDate]);
+  const canLoad = Boolean(startStr && endStr && startStr <= endStr);
 
   async function load() {
+    if (!canLoad) return;
     setBusy(true);
     setError(null);
     try {
-      // agendas por dataDia (string)
-      const a = await fetchAgendasByDataDiaRange(startStr, endStr);
-      // visitas por dataHora (number ou Timestamp)
-      const v = await fetchVisitasBetween(startMs, endMs);
-
-      setAgendas(a);
-      setVisitas(v);
+      const data = await fetchRelatoriosByPeriodo(startStr, endStr);
+      setRows(data);
     } catch (e: any) {
-      setError(e?.message ?? "Falha ao carregar dados do relatório.");
+      setError(e?.message ?? "Falha ao carregar relatórios.");
     } finally {
       setBusy(false);
     }
   }
 
   useEffect(() => {
-    // auto-load ao alterar datas (com leve proteção)
-    if (!startStr || !endStr) return;
-    if (startStr > endStr) return;
+    if (!canLoad) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startStr, endStr]);
 
-  const days = useMemo(() => {
-    const out: string[] = [];
-    const d = new Date(`${startStr}T00:00:00`);
-    const end = new Date(`${endStr}T00:00:00`);
-    d.setHours(0, 0, 0, 0);
-    end.setHours(0, 0, 0, 0);
+  const filtered = useMemo(() => {
+    const base = rows;
+    if (guKey === "TODAS") return base;
+    return base.filter((r) => safeStr(r.guarnicaoKey) === guKey);
+  }, [rows, guKey]);
 
-    while (d.getTime() <= end.getTime()) {
-      out.push(ymd(d));
-      d.setDate(d.getDate() + 1);
-    }
-    return out;
-  }, [startStr, endStr]);
+  const totals = useMemo(() => sumResumo(filtered), [filtered]);
 
-  // index agendas por dia e guarnição
-  const agendasByDayGu = useMemo(() => {
-    const m = new Map<string, Map<Guarnicao, AgendaRow[]>>();
-    for (const row of agendas) {
-      const day = safeStr((row as any).dataDia || "");
+  const countTotal = filtered.length;
+  const countNaoConfere = filtered.filter((r) => r.resumoConfere === false).length;
+
+  const acoesAgg = useMemo(() => aggregateAcoes(filtered), [filtered]);
+
+  const groupedByDia = useMemo(() => {
+    const m = new Map<string, RelatorioServico[]>();
+    for (const r of filtered) {
+      const day = safeStr(r.dataDia);
       if (!day) continue;
-      // tente guarnição em vários campos comuns
-      const g =
-        normalizeGuarnicaoKeyFromAny((row as any).guarnicao) ||
-        normalizeGuarnicaoKeyFromAny((row as any).guarnicaoKey) ||
-        normalizeGuarnicaoKeyFromAny((row as any).equipe) ||
-        null;
-      if (!g) continue;
-
-      if (!m.has(day)) m.set(day, new Map());
-      const inner = m.get(day)!;
-      if (!inner.has(g)) inner.set(g, []);
-      inner.get(g)!.push(row);
+      if (!m.has(day)) m.set(day, []);
+      m.get(day)!.push(r);
     }
-    return m;
-  }, [agendas]);
-
-  // index visitas por dia e guarnição
-  const visitasByDayGu = useMemo(() => {
-    const m = new Map<string, Map<Guarnicao, VisitaRow[]>>();
-    for (const v of visitas) {
-      const ms = parseMillis((v as any).dataHora);
-      if (!ms) continue;
-      const d = new Date(ms);
-      const day = ymd(d);
-
-      const g =
-        normalizeGuarnicaoKeyFromAny((v as any).guarnicao) ||
-        normalizeGuarnicaoKeyFromAny((v as any).guarnicaoKey) ||
-        normalizeGuarnicaoKeyFromAny((v as any).equipe) ||
-        null;
-      if (!g) continue;
-
-      if (!m.has(day)) m.set(day, new Map());
-      const inner = m.get(day)!;
-      if (!inner.has(g)) inner.set(g, []);
-      inner.get(g)!.push(v);
-    }
-    return m;
-  }, [visitas]);
-
-  // métricas por dia+gu
-  const metricsByDayGu = useMemo(() => {
-    const m = new Map<string, Map<Guarnicao, Metric>>();
-    for (const day of days) {
-      const inner = new Map<Guarnicao, Metric>();
-      for (const g of GUARNICOES) {
-        const vlist = visitasByDayGu.get(day)?.get(g) ?? [];
-        const alist = agendasByDayGu.get(day)?.get(g) ?? [];
-
-        const assistidasSet = new Set<string>();
-        let desc = 0;
-
-        for (const v of vlist) {
-          const idA = safeStr((v as any).idAssistida);
-          if (idA) assistidasSet.add(idA);
-          if ((v as any).houveDescumprimento === true) desc += 1;
-        }
-
-        // agenda realizada: idAssistida da agenda aparece nas visitas do mesmo dia/guarnição
-        const visitasAssistidas = new Set<string>();
-        for (const v of vlist) {
-          const idA = safeStr((v as any).idAssistida);
-          if (idA) visitasAssistidas.add(idA);
-        }
-
-        let realizada = 0;
-        for (const a of alist) {
-          const idA = safeStr((a as any).idAssistida);
-          if (idA && visitasAssistidas.has(idA)) realizada += 1;
-        }
-
-        const planejada = alist.length;
-        const naoRealizada = Math.max(0, planejada - realizada);
-
-        inner.set(g, {
-          visitasTotal: vlist.length,
-          assistidasUnicas: assistidasSet.size,
-          descumprimentos: desc,
-          agendaPlanejada: planejada,
-          agendaRealizada: realizada,
-          agendaNaoRealizada: naoRealizada,
-        });
-      }
-      m.set(day, inner);
-    }
-    return m;
-  }, [days, visitasByDayGu, agendasByDayGu]);
-
-  // totais do período por guarnição e geral
-  const totalByGu = useMemo(() => {
-    const out = new Map<Guarnicao, Metric>();
-    for (const g of GUARNICOES) out.set(g, emptyMetric());
-
-    for (const day of days) {
-      const inner = metricsByDayGu.get(day);
-      if (!inner) continue;
-      for (const g of GUARNICOES) {
-        out.set(g, addMetric(out.get(g)!, inner.get(g) ?? emptyMetric()));
-      }
-    }
-    return out;
-  }, [days, metricsByDayGu]);
-
-  const totalPeriodo = useMemo(() => {
-    let acc = emptyMetric();
-    for (const g of GUARNICOES) {
-      acc = addMetric(acc, totalByGu.get(g) ?? emptyMetric());
-    }
-    return acc;
-  }, [totalByGu]);
-
-  const canLoad = startStr && endStr && startStr <= endStr;
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [filtered]);
 
   function buildResumoTexto(): string {
     const lines: string[] = [];
-    lines.push("RELATÓRIO (PERÍODO) - PATRULHA MARIA DA PENHA");
+    lines.push("RELATÓRIO DE SERVIÇO - PERÍODO (WEB)");
     lines.push(`Período: ${startStr} a ${endStr}`);
+    if (guKey !== "TODAS") lines.push(`Guarnição: ${fmtGuKey(guKey)}`);
     lines.push("");
 
-    lines.push("RESUMO GERAL DO PERÍODO:");
-    lines.push(`- Visitas: ${totalPeriodo.visitasTotal}`);
-    lines.push(`- Assistidas únicas (somatório por dia/guarnição): ${totalPeriodo.assistidasUnicas}`);
-    lines.push(`- Descumprimentos: ${totalPeriodo.descumprimentos}`);
-    lines.push(`- Agenda planejada: ${totalPeriodo.agendaPlanejada}`);
-    lines.push(`- Agenda realizada: ${totalPeriodo.agendaRealizada}`);
-    lines.push(`- Agenda não realizada: ${totalPeriodo.agendaNaoRealizada}`);
+    lines.push("TOTAIS DO PERÍODO (somatório dos resumosAuto):");
+    lines.push(`- Relatórios encontrados: ${countTotal}`);
+    lines.push(`- Resumo NÃO confere: ${countNaoConfere}`);
+    lines.push(`- Visitas total: ${totals.visitasTotal}`);
+    lines.push(`- Assistidas únicas (somatório): ${totals.assistidasUnicas}`);
+    lines.push(`- Descumprimentos: ${totals.descumprimentos}`);
+    lines.push(`- Agenda planejada: ${totals.agendaPlanejada}`);
+    lines.push(`- Agenda realizada: ${totals.agendaRealizada}`);
+    lines.push(`- Agenda não realizada: ${totals.agendaNaoRealizada}`);
     lines.push("");
 
-    for (const day of days) {
-      lines.push(`DIA ${day}`);
-      const inner = metricsByDayGu.get(day);
-      for (const g of GUARNICOES) {
-        const m = inner?.get(g) ?? emptyMetric();
-        const temAlgo = m.visitasTotal > 0 || m.agendaPlanejada > 0 || m.descumprimentos > 0;
-        if (!temAlgo) {
-          lines.push(`• ${g}: SEM REGISTROS (visitas/agenda)`);
-          continue;
+    if (acoesAgg.length) {
+      lines.push("AÇÕES (somatório por tipo):");
+      for (const a of acoesAgg) {
+        lines.push(`- ${a.tipo}: ${a.quantidade}`);
+        if (a.exemplosDetalhe.length) {
+          lines.push(`  Ex.: ${a.exemplosDetalhe.join(" | ")}`);
         }
-        lines.push(`• ${g}:`);
-        lines.push(`  - Visitas: ${m.visitasTotal} | Assistidas únicas: ${m.assistidasUnicas} | Desc.: ${m.descumprimentos}`);
+      }
+      lines.push("");
+    }
+
+    for (const [day, items] of groupedByDia) {
+      lines.push(`DIA ${day}`);
+      for (const r of items) {
+        const g = safeStr(r.guarnicaoKey) || safeStr(r.guarnicao) || "SEM GUARNIÇÃO";
+        const cmd = safeStr(r.comandanteGuarnicao);
+        const vtr = `${safeStr(r.prefixoViatura)} ${safeStr(r.placaViatura)}`.trim();
+        const s = r.resumoAuto ?? {};
+        lines.push(`• ${g}${cmd ? ` | CMT: ${cmd}` : ""}${vtr ? ` | VTR: ${vtr}` : ""}`);
         lines.push(
-          `  - Agenda: planejada ${m.agendaPlanejada} | realizada ${m.agendaRealizada} | não realizada ${m.agendaNaoRealizada}`
+          `  - Visitas: ${safeNum(s.visitasTotal)} | Assistidas únicas: ${safeNum(
+            s.assistidasUnicas
+          )} | Desc.: ${safeNum(s.descumprimentos)}`
         );
+        lines.push(
+          `  - Agenda: plan ${safeNum(s.agendaPlanejada)} | real ${safeNum(s.agendaRealizada)} | não real ${safeNum(
+            s.agendaNaoRealizada
+          )}`
+        );
+        if (r.resumoConfere === false) {
+          const j = safeStr(r.justificativaDivergencia).trim();
+          lines.push(`  - RESUMO NÃO CONFERE${j ? ` | Just.: ${j}` : ""}`);
+        }
       }
       lines.push("");
     }
@@ -416,7 +282,6 @@ export default function RelatorioPeriodoPage() {
     try {
       await navigator.clipboard.writeText(txt);
     } catch {
-      // fallback antigo
       const ta = document.createElement("textarea");
       ta.value = txt;
       document.body.appendChild(ta);
@@ -431,11 +296,14 @@ export default function RelatorioPeriodoPage() {
       <Stack spacing={2.5}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
           <Box sx={{ flex: 1 }}>
-            <Typography variant="h5" sx={{ fontWeight: 900 }}>
-              Relatório por Período
-            </Typography>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <AssessmentOutlinedIcon />
+              <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                Relatório por Período (Firestore)
+              </Typography>
+            </Stack>
             <Typography variant="body2" color="text.secondary">
-              Mesmo cálculo do app: visitas + agenda planejada (por dia e por guarnição).
+              Fonte: coleção <b>relatorios_servico</b> (campos: dataDia, guarnicaoKey, resumoAuto, acoes, etc.).
             </Typography>
           </Box>
 
@@ -466,10 +334,10 @@ export default function RelatorioPeriodoPage() {
         </Stack>
 
         <Card>
-          <CardHeader title="Filtro do período" />
+          <CardHeader title="Filtros" />
           <CardContent>
             <Grid container spacing={2}>
-              <Grid item xs={12} sm={4}>
+              <Grid item xs={12} sm={3}>
                 <TextField
                   fullWidth
                   label="Data inicial"
@@ -479,7 +347,8 @@ export default function RelatorioPeriodoPage() {
                   InputLabelProps={{ shrink: true }}
                 />
               </Grid>
-              <Grid item xs={12} sm={4}>
+
+              <Grid item xs={12} sm={3}>
                 <TextField
                   fullWidth
                   label="Data final"
@@ -489,13 +358,30 @@ export default function RelatorioPeriodoPage() {
                   InputLabelProps={{ shrink: true }}
                 />
               </Grid>
-              <Grid item xs={12} sm={4}>
+
+              <Grid item xs={12} sm={3}>
+                <TextField fullWidth select label="Guarnição" value={guKey} onChange={(e) => setGuKey(e.target.value)}>
+                  <MenuItem value="TODAS">Todas</MenuItem>
+                  {GUARNICOES_KEYS.map((k) => (
+                    <MenuItem key={k} value={k}>
+                      {fmtGuKey(k)}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+
+              <Grid item xs={12} sm={3}>
                 <Stack direction="row" spacing={1} sx={{ height: "100%" }} alignItems="center">
-                  <Button variant="contained" disabled={!canLoad || busy} onClick={load}>
+                  <Button variant="contained" startIcon={<RefreshIcon />} disabled={!canLoad || busy} onClick={load}>
                     {busy ? "Carregando..." : "Atualizar"}
                   </Button>
-                  <Button variant="outlined" disabled={!canLoad || busy} onClick={copyResumo}>
-                    Copiar resumo
+                  <Button
+                    variant="outlined"
+                    startIcon={<ContentCopyIcon />}
+                    disabled={!canLoad || busy}
+                    onClick={copyResumo}
+                  >
+                    Copiar
                   </Button>
                 </Stack>
               </Grid>
@@ -517,167 +403,303 @@ export default function RelatorioPeriodoPage() {
 
         <Grid container spacing={2}>
           <Grid item xs={12} sm={4} md={2}>
-            <KPICard title="Visitas (período)" value={totalPeriodo.visitasTotal} />
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Relatórios" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {countTotal}
+                </Typography>
+              </CardContent>
+            </Card>
           </Grid>
+
           <Grid item xs={12} sm={4} md={2}>
-            <KPICard title="Assistidas únicas (somatório)" value={totalPeriodo.assistidasUnicas} />
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Não confere" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {countNaoConfere}
+                </Typography>
+              </CardContent>
+            </Card>
           </Grid>
+
           <Grid item xs={12} sm={4} md={2}>
-            <KPICard title="Descumprimentos" value={totalPeriodo.descumprimentos} />
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Visitas" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {totals.visitasTotal}
+                </Typography>
+              </CardContent>
+            </Card>
           </Grid>
+
           <Grid item xs={12} sm={4} md={2}>
-            <KPICard title="Agenda planejada" value={totalPeriodo.agendaPlanejada} />
+            <Card>
+              <CardHeader
+                titleTypographyProps={{ variant: "body2", color: "text.secondary" }}
+                title="Assistidas únicas"
+                sx={{ pb: 0.5 }}
+              />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {totals.assistidasUnicas}
+                </Typography>
+              </CardContent>
+            </Card>
           </Grid>
+
           <Grid item xs={12} sm={4} md={2}>
-            <KPICard title="Agenda realizada" value={totalPeriodo.agendaRealizada} />
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Descumprimentos" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {totals.descumprimentos}
+                </Typography>
+              </CardContent>
+            </Card>
           </Grid>
+
           <Grid item xs={12} sm={4} md={2}>
-            <KPICard title="Agenda não realizada" value={totalPeriodo.agendaNaoRealizada} />
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Agenda (plan)" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {totals.agendaPlanejada}
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+
+          <Grid item xs={12} sm={4} md={2}>
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Agenda (real)" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {totals.agendaRealizada}
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+
+          <Grid item xs={12} sm={4} md={2}>
+            <Card>
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Agenda (não real)" sx={{ pb: 0.5 }} />
+              <CardContent sx={{ pt: 0 }}>
+                <Typography variant="h5" sx={{ fontWeight: 900 }}>
+                  {totals.agendaNaoRealizada}
+                </Typography>
+              </CardContent>
+            </Card>
           </Grid>
         </Grid>
 
         <Card>
-          <CardHeader title="Resumo por guarnição (no período)" />
+          <CardHeader
+            title="Ações no período (somatório)"
+            subheader="Baseado no array 'acoes' de cada relatório."
+          />
           <CardContent>
-            <Grid container spacing={2}>
-              {GUARNICOES.map((g) => {
-                const m = totalByGu.get(g) ?? emptyMetric();
-                return (
-                  <Grid item xs={12} md={6} key={g}>
+            {acoesAgg.length === 0 ? (
+              <Alert severity="info">Nenhuma ação encontrada no período/guarnição selecionados.</Alert>
+            ) : (
+              <Grid container spacing={1.5}>
+                {acoesAgg.map((a) => (
+                  <Grid item xs={12} md={6} key={a.tipo}>
                     <Card variant="outlined">
-                      <CardHeader
-                        title={g}
-                        action={
-                          <Stack direction="row" spacing={1} alignItems="center">
-                            <Chip size="small" label={`Visitas: ${m.visitasTotal}`} />
-                            <Chip size="small" label={`Agenda: ${m.agendaPlanejada}`} />
-                          </Stack>
-                        }
-                      />
-                      <CardContent sx={{ pt: 0 }}>
-                        <Grid container spacing={1.5}>
-                          <Grid item xs={6} sm={4}>
-                            <Typography variant="caption" color="text.secondary">
-                              Assistidas únicas
-                            </Typography>
-                            <Typography sx={{ fontWeight: 900 }}>{m.assistidasUnicas}</Typography>
-                          </Grid>
-                          <Grid item xs={6} sm={4}>
-                            <Typography variant="caption" color="text.secondary">
-                              Descumprimentos
-                            </Typography>
-                            <Typography sx={{ fontWeight: 900 }}>{m.descumprimentos}</Typography>
-                          </Grid>
-                          <Grid item xs={6} sm={4}>
-                            <Typography variant="caption" color="text.secondary">
-                              Agenda realizada
-                            </Typography>
-                            <Typography sx={{ fontWeight: 900 }}>{m.agendaRealizada}</Typography>
-                          </Grid>
-                          <Grid item xs={6} sm={4}>
-                            <Typography variant="caption" color="text.secondary">
-                              Agenda não realizada
-                            </Typography>
-                            <Typography sx={{ fontWeight: 900 }}>{m.agendaNaoRealizada}</Typography>
-                          </Grid>
-                        </Grid>
+                      <CardContent>
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Typography sx={{ fontWeight: 900 }}>{a.tipo}</Typography>
+                          <Chip label={`Qtd: ${a.quantidade}`} />
+                        </Stack>
+                        {a.exemplosDetalhe.length ? (
+                          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                            Exemplos: {a.exemplosDetalhe.join(" | ")}
+                          </Typography>
+                        ) : null}
                       </CardContent>
                     </Card>
                   </Grid>
-                );
-              })}
-            </Grid>
+                ))}
+              </Grid>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader
-            title="Detalhamento por dia e guarnição"
-            subheader="Tabela com as métricas calculadas (visitas + agenda)."
+            title="Relatórios encontrados"
+            subheader="Detalhe por documento (campos do Firestore)."
           />
           <CardContent>
-            <Box sx={{ overflowX: "auto" }}>
-              <Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
-                <Box component="thead">
-                  <Box component="tr">
-                    <Box component="th" sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Dia
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Guarnição
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Visitas
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Assistidas únicas
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Desc.
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Agenda (plan)
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Agenda (real)
-                    </Box>
-                    <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                      Agenda (não real)
-                    </Box>
-                  </Box>
-                </Box>
-                <Box component="tbody">
-                  {days.map((day) =>
-                    GUARNICOES.map((g, idx) => {
-                      const m = metricsByDayGu.get(day)?.get(g) ?? emptyMetric();
-                      const muted = m.visitasTotal === 0 && m.agendaPlanejada === 0 && m.descumprimentos === 0;
-                      return (
-                        <Box component="tr" key={`${day}-${g}`} sx={{ opacity: muted ? 0.55 : 1 }}>
-                          <Box component="td" sx={{ p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                            {idx === 0 ? (
-                              <Stack direction="row" spacing={1} alignItems="center">
-                                <Typography sx={{ fontWeight: 900 }}>{day}</Typography>
-                              </Stack>
-                            ) : (
-                              <Typography color="text.secondary">{day}</Typography>
-                            )}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
-                            {g}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
-                            {m.visitasTotal}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
-                            {m.assistidasUnicas}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
-                            {m.descumprimentos}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
-                            {m.agendaPlanejada}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
-                            {m.agendaRealizada}
-                          </Box>
-                          <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
-                            {m.agendaNaoRealizada}
-                          </Box>
-                        </Box>
-                      );
-                    })
-                  )}
-                </Box>
-              </Box>
-            </Box>
+            {filtered.length === 0 ? (
+              <Alert severity="warning">Nenhum relatório encontrado no período selecionado.</Alert>
+            ) : (
+              <Stack spacing={1.5}>
+                {filtered.map((r) => {
+                  const s = r.resumoAuto ?? {};
+                  const gKey = safeStr(r.guarnicaoKey) || "SEM_KEY";
+                  const g = safeStr(r.guarnicao) || fmtGuKey(gKey);
+                  const titulo = `${safeStr(r.dataDia)} | ${gKey}`;
 
-            <Divider sx={{ my: 2 }} />
+                  const vtr = `${safeStr(r.prefixoViatura)} ${safeStr(r.placaViatura)}`.trim();
 
-            <Alert severity="info">
-              Se você quiser que esta tela exiba também as informações “manuais” do relatório (comandante, viatura, ações, eventos),
-              aí precisamos consultar a coleção onde você salva o <b>RelatorioServicoDia</b> no Firestore (o app grava um doc por
-              dia+guarnição).
-            </Alert>
+                  return (
+                    <Card key={r.id} variant="outlined">
+                      <CardHeader
+                        title={titulo}
+                        subheader={
+                          <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mt: 0.5 }}>
+                            <Typography variant="body2" color="text.secondary">
+                              Guarnição: <b>{g}</b>
+                            </Typography>
+                            {r.comandanteGuarnicao ? (
+                              <Typography variant="body2" color="text.secondary">
+                                CMT: <b>{r.comandanteGuarnicao}</b>
+                              </Typography>
+                            ) : null}
+                            {vtr ? (
+                              <Typography variant="body2" color="text.secondary">
+                                VTR: <b>{vtr}</b>
+                              </Typography>
+                            ) : null}
+                          </Stack>
+                        }
+                        action={
+                          <Stack direction="row" spacing={1}>
+                            <Chip size="small" label={`Visitas: ${safeNum(s.visitasTotal)}`} />
+                            <Chip size="small" label={`Desc.: ${safeNum(s.descumprimentos)}`} />
+                            <Chip
+                              size="small"
+                              color={r.resumoConfere === false ? "warning" : "default"}
+                              label={r.resumoConfere === false ? "Não confere" : "Confere"}
+                            />
+                          </Stack>
+                        }
+                      />
+                      <CardContent sx={{ pt: 0 }}>
+                        <Grid container spacing={1.5}>
+                          <Grid item xs={6} md={2}>
+                            <Typography variant="caption" color="text.secondary">
+                              Assistidas únicas
+                            </Typography>
+                            <Typography sx={{ fontWeight: 900 }}>{safeNum(s.assistidasUnicas)}</Typography>
+                          </Grid>
+
+                          <Grid item xs={6} md={2}>
+                            <Typography variant="caption" color="text.secondary">
+                              Agenda planejada
+                            </Typography>
+                            <Typography sx={{ fontWeight: 900 }}>{safeNum(s.agendaPlanejada)}</Typography>
+                          </Grid>
+
+                          <Grid item xs={6} md={2}>
+                            <Typography variant="caption" color="text.secondary">
+                              Agenda realizada
+                            </Typography>
+                            <Typography sx={{ fontWeight: 900 }}>{safeNum(s.agendaRealizada)}</Typography>
+                          </Grid>
+
+                          <Grid item xs={6} md={2}>
+                            <Typography variant="caption" color="text.secondary">
+                              Agenda não realizada
+                            </Typography>
+                            <Typography sx={{ fontWeight: 900 }}>{safeNum(s.agendaNaoRealizada)}</Typography>
+                          </Grid>
+
+                          <Grid item xs={12} md={4}>
+                            <Typography variant="caption" color="text.secondary">
+                              Efetivo
+                            </Typography>
+                            <Typography sx={{ fontWeight: 700 }} noWrap title={safeStr(r.efetivo)}>
+                              {safeStr(r.efetivo) || "-"}
+                            </Typography>
+                          </Grid>
+                        </Grid>
+
+                        {r.resumoConfere === false ? (
+                          <Alert severity="warning" sx={{ mt: 2 }}>
+                            <b>Justificativa:</b> {safeStr(r.justificativaDivergencia) || "—"}
+                          </Alert>
+                        ) : null}
+
+                        <Divider sx={{ my: 2 }} />
+
+                        <Typography variant="subtitle2" sx={{ fontWeight: 900, mb: 1 }}>
+                          Ações registradas
+                        </Typography>
+
+                        {(r.acoes?.length ?? 0) === 0 ? (
+                          <Typography variant="body2" color="text.secondary">
+                            Nenhuma ação registrada.
+                          </Typography>
+                        ) : (
+                          <Box sx={{ overflowX: "auto" }}>
+                            <Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
+                              <Box component="thead">
+                                <Box component="tr">
+                                  <Box component="th" sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                    Tipo
+                                  </Box>
+                                  <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                    Qtd
+                                  </Box>
+                                  <Box component="th" sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                    Detalhe
+                                  </Box>
+                                </Box>
+                              </Box>
+                              <Box component="tbody">
+                                {(r.acoes ?? []).map((a, idx) => (
+                                  <Box component="tr" key={`${r.id}-acao-${idx}`}>
+                                    <Box component="td" sx={{ p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                      {safeStr(a.tipo) || "-"}
+                                    </Box>
+                                    <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
+                                      {safeNum(a.quantidade)}
+                                    </Box>
+                                    <Box component="td" sx={{ p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                      {safeStr(a.detalhe) || "-"}
+                                    </Box>
+                                  </Box>
+                                ))}
+                              </Box>
+                            </Box>
+                          </Box>
+                        )}
+
+                        {(r.observacoesGerais || r.pendenciasProximoServico || r.problemasOperacionais) ? (
+                          <>
+                            <Divider sx={{ my: 2 }} />
+                            <Grid container spacing={1.5}>
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="caption" color="text.secondary">
+                                  Observações gerais
+                                </Typography>
+                                <Typography>{safeStr(r.observacoesGerais) || "—"}</Typography>
+                              </Grid>
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="caption" color="text.secondary">
+                                  Pendências próximo serviço
+                                </Typography>
+                                <Typography>{safeStr(r.pendenciasProximoServico) || "—"}</Typography>
+                              </Grid>
+                              <Grid item xs={12} md={4}>
+                                <Typography variant="caption" color="text.secondary">
+                                  Problemas operacionais
+                                </Typography>
+                                <Typography>{safeStr(r.problemasOperacionais) || "—"}</Typography>
+                              </Grid>
+                            </Grid>
+                          </>
+                        ) : null}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </Stack>
+            )}
           </CardContent>
         </Card>
       </Stack>
