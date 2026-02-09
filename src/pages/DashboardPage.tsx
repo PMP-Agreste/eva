@@ -44,13 +44,14 @@ const GUARNICOES = ['PMP Alfa', 'PMP Bravo', 'PMP Charlie', 'PMP Delta'] as cons
 type AgendaRow = AgendaPlanejada & {
   idAssistida?: string;
   dataDia?: string; // "YYYY-MM-DD"
-  ordem?: unknown;
 };
 
 type VisitaRow = Visita & {
   latitude?: number;
   longitude?: number;
   houveDescumprimento?: boolean;
+  idAssistida?: string; // ✅ conforme seu Firestore
+  dataHora?: any;       // ✅ number(ms) conforme seu Firestore
 };
 
 function two(n: number) {
@@ -64,22 +65,29 @@ function dayKeyFromDate(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function safeStr(v: unknown) {
+  return String(v ?? '').trim();
+}
+
 function parseMillis(v: unknown): number | null {
   if (v == null) return null;
 
+  // ✅ seu caso: number em ms
   if (typeof v === 'number' && Number.isFinite(v)) return v;
+
+  // string numérica
   if (typeof v === 'string' && /^\d{10,13}$/.test(v)) return Number(v);
 
+  // Timestamp
   if (v instanceof Timestamp) return v.toMillis();
 
+  // objeto tipo Timestamp
   if (typeof v === 'object' && v) {
     const any = v as any;
-
     if (typeof any.toMillis === 'function') {
       const ms = Number(any.toMillis());
       return Number.isFinite(ms) ? ms : null;
     }
-
     if ('seconds' in any) {
       const seconds = Number(any.seconds);
       if (!Number.isFinite(seconds)) return null;
@@ -105,23 +113,15 @@ function addDays(d: Date, days: number) {
 
 function makeRange(period: PeriodKey): { start: Date; endExclusive: Date; label: string } {
   const endExclusive = addDays(startOfToday(), 1);
-  if (period === 'hoje') {
-    const start = startOfToday();
-    return { start, endExclusive, label: 'Hoje' };
-  }
-  if (period === '7d') {
-    const start = addDays(startOfToday(), -6);
-    return { start, endExclusive, label: 'Últimos 7 dias' };
-  }
-  const start = addDays(startOfToday(), -29);
-  return { start, endExclusive, label: 'Últimos 30 dias' };
+  if (period === 'hoje') return { start: startOfToday(), endExclusive, label: 'Hoje' };
+  if (period === '7d') return { start: addDays(startOfToday(), -6), endExclusive, label: 'Últimos 7 dias' };
+  return { start: addDays(startOfToday(), -29), endExclusive, label: 'Últimos 30 dias' };
 }
 
 function enumerateDayKeys(start: Date, endExclusive: Date): string[] {
   const out: string[] = [];
   const cur = new Date(start);
   cur.setHours(0, 0, 0, 0);
-
   while (cur.getTime() < endExclusive.getTime()) {
     out.push(dayKeyFromDate(cur));
     cur.setDate(cur.getDate() + 1);
@@ -132,10 +132,6 @@ function enumerateDayKeys(start: Date, endExclusive: Date): string[] {
 function formatDayLabel(dayKey: string) {
   const [, m, d] = dayKey.split('-');
   return `${d}/${m}`;
-}
-
-function safeStr(v: unknown) {
-  return String(v ?? '').trim();
 }
 
 function normalizeRisco(v: unknown): 'Alto' | 'Médio' | 'Baixo' | 'Sem' {
@@ -153,27 +149,43 @@ function uniqById<T extends { id: string }>(items: T[]): T[] {
   return Array.from(m.values());
 }
 
+// ✅ chave oficial da assistida (doc.id), com fallback
+function getAssistidaKey(a: any): string {
+  return safeStr(a?.id) || safeStr(a?.idAssistida) || safeStr(a?.assistidaId) || '';
+}
+
+// ✅ seu formato de visita (confirmado)
+function getVisitaAssistidaId(v: any): string {
+  return safeStr(v?.idAssistida);
+}
+
+function getVisitaMs(v: any): number | null {
+  return parseMillis(v?.dataHora) ?? null;
+}
+
 async function fetchAssistidasAtivas(): Promise<Assistida[]> {
   const snap = await getDocs(query(collection(db, 'assistidas'), where('ativa', '==', true), limit(2000)));
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) } as Assistida));
 }
 
 async function fetchAgendasByDataDiaRange(startKey: string, endKey: string): Promise<AgendaRow[]> {
-  const q = query(
+  const qy = query(
     collection(db, 'agendas_planejadas'),
     where('dataDia', '>=', startKey),
     where('dataDia', '<=', endKey),
     orderBy('dataDia', 'asc'),
     limit(8000),
   );
-  const snap = await getDocs(q);
+  const snap = await getDocs(qy);
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) } as AgendaRow));
 }
 
 async function fetchVisitasSince(ms: number): Promise<VisitaRow[]> {
+  // ✅ como você usa number(ms), essa query é a principal
   const col = collection(db, 'visitas');
-
   const qNum = query(col, where('dataHora', '>=', ms), orderBy('dataHora', 'desc'), limit(12000));
+
+  // fallback (caso algum doc antigo esteja como Timestamp)
   const qTs = query(col, where('dataHora', '>=', Timestamp.fromMillis(ms)), orderBy('dataHora', 'desc'), limit(12000));
 
   const results = await Promise.allSettled([getDocs(qNum), getDocs(qTs)]);
@@ -223,7 +235,6 @@ export function DashboardPage() {
   const [loadingAgendas, setLoadingAgendas] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ✅ controles "ver mais"
   const [showAllSemVisita, setShowAllSemVisita] = useState(false);
   const [showAllVencendo, setShowAllVencendo] = useState(false);
 
@@ -293,27 +304,30 @@ export function DashboardPage() {
     const startMs = range.start.getTime();
     const endMs = range.endExclusive.getTime();
 
+    // dia -> assistidaId -> guarnições que visitaram
     const idx = new Map<string, Map<string, Set<string>>>();
+
     const totalVisitasPorDia = new Map<string, number>();
     const visitasGpsPorDia = new Map<string, number>();
     const descumprimentosPorDia = new Map<string, number>();
+
+    // ✅ última visita por assistidaId
     const lastVisitaPorAssistida = new Map<string, number>();
 
     for (const v of visitas120) {
-      const ms = parseMillis((v as any).dataHora);
+      const ms = getVisitaMs(v);
       if (ms == null) continue;
 
-      const aid = safeStr((v as any).idAssistida);
-      const g = safeStr((v as any).guarnicao);
-      const day = dayKeyFromDate(new Date(ms));
-
+      const aid = getVisitaAssistidaId(v);
       if (aid) {
         const cur = lastVisitaPorAssistida.get(aid);
         if (!cur || ms > cur) lastVisitaPorAssistida.set(aid, ms);
       }
 
+      // métricas só do período selecionado
       if (ms < startMs || ms >= endMs) continue;
 
+      const day = dayKeyFromDate(new Date(ms));
       totalVisitasPorDia.set(day, (totalVisitasPorDia.get(day) ?? 0) + 1);
 
       const lat = (v as any).latitude;
@@ -326,6 +340,7 @@ export function DashboardPage() {
         descumprimentosPorDia.set(day, (descumprimentosPorDia.get(day) ?? 0) + 1);
       }
 
+      const g = safeStr((v as any).guarnicao);
       if (!aid) continue;
 
       if (!idx.has(day)) idx.set(day, new Map());
@@ -335,17 +350,12 @@ export function DashboardPage() {
       if (g) set.add(g);
     }
 
+    // agendas por dia / por guarnição
     const plannedPorDia = new Map<string, AgendaRow[]>();
     const plannedPorGuarnicao = new Map<string, AgendaRow[]>();
 
     for (const a of agendas) {
-      const day =
-        safeStr((a as any).dataDia) ||
-        (() => {
-          const ms = parseMillis((a as any).data);
-          return ms ? dayKeyFromDate(new Date(ms)) : '';
-        })();
-
+      const day = safeStr((a as any).dataDia);
       if (!day) continue;
 
       if (!plannedPorDia.has(day)) plannedPorDia.set(day, []);
@@ -375,15 +385,13 @@ export function DashboardPage() {
         if (gPlan && byAssist.has(gPlan)) cumpridasSame += 1;
       }
 
-      const visitas = totalVisitasPorDia.get(day) ?? 0;
-
       return {
         dayKey: day,
         dia: formatDayLabel(day),
         planejadas: planned.length,
         cumpridas: cumpridasAny,
         cumpridasGuarnicao: cumpridasSame,
-        visitas,
+        visitas: totalVisitasPorDia.get(day) ?? 0,
         gps: visitasGpsPorDia.get(day) ?? 0,
         desc: descumprimentosPorDia.get(day) ?? 0,
       };
@@ -411,13 +419,7 @@ export function DashboardPage() {
 
       for (const p of planned) {
         const aid = safeStr((p as any).idAssistida);
-        const day =
-          safeStr((p as any).dataDia) ||
-          (() => {
-            const ms = parseMillis((p as any).data);
-            return ms ? dayKeyFromDate(new Date(ms)) : '';
-          })();
-
+        const day = safeStr((p as any).dataDia);
         if (!aid || !day) continue;
 
         const byAssist = idx.get(day)?.get(aid);
@@ -437,21 +439,23 @@ export function DashboardPage() {
       const risco = normalizeRisco((a as any).grauRisco ?? (a as any).risco ?? (a as any).nivelRisco);
       riscoCounts[risco] += 1;
     }
-
     const riscoChart = (Object.keys(riscoCounts) as Array<keyof typeof riscoCounts>)
       .map((k) => ({ name: k === 'Sem' ? 'Sem classificação' : k, value: riscoCounts[k] }))
       .filter((x) => x.value > 0);
 
-    // ✅ ALERTA 1: Sem visita há 45 dias (qualquer risco)
     const now = Date.now();
     const ms45d = 45 * 24 * 60 * 60 * 1000;
 
+    // ✅ ALERTA 1: sem visita há 45 dias
     const alertasSemVisita = assistidas
       .map((a) => {
-        const last = lastVisitaPorAssistida.get(a.id) ?? 0;
+        const key = getAssistidaKey(a);
+        const last = key ? (lastVisitaPorAssistida.get(key) ?? 0) : 0;
         const dias = last ? Math.floor((now - last) / (24 * 60 * 60 * 1000)) : 9999;
+
         return {
           id: a.id,
+          key,
           nome: safeStr((a as any).nomeCompleto) || a.id,
           ultimaVisitaMs: last || null,
           diasSemVisita: dias,
@@ -461,14 +465,12 @@ export function DashboardPage() {
       .filter((x) => !x.ultimaVisitaMs || now - (x.ultimaVisitaMs ?? 0) >= ms45d)
       .sort((a, b) => (b.diasSemVisita ?? 0) - (a.diasSemVisita ?? 0));
 
-    // ✅ ALERTA 2: Medida protetiva vencendo em até 7 dias
-    // Ajuste os campos aqui se no seu doc tiver outro nome.
+    // ✅ ALERTA 2: medida vencendo (até 7 dias)
     const alertasMedidaVencendo = assistidas
       .map((a) => {
         const v =
           (a as any).dataValidadeMedida ??
           (a as any).validadeMedida ??
-          (a as any).medidaValidade ??
           (a as any).validadeMedidaProtetiva ??
           null;
 
@@ -483,11 +485,7 @@ export function DashboardPage() {
           nome: safeStr((a as any).nomeCompleto) || a.id,
           validadeMs: ms,
           diasParaVencer: dias,
-          tipo:
-            safeStr((a as any).tipoMedidaPrincipal) ||
-            safeStr((a as any).tipoMedida) ||
-            safeStr((a as any).medidaTipo) ||
-            '—',
+          tipo: safeStr((a as any).tipoMedidaPrincipal) || safeStr((a as any).tipoMedida) || '—',
         };
       })
       .filter((x): x is NonNullable<typeof x> => !!x)
@@ -512,9 +510,7 @@ export function DashboardPage() {
       exclusive
       onChange={(_, v) => v && setPeriod(v)}
       size="small"
-      sx={{
-        '& .MuiToggleButton-root': { px: 1.5, py: 0.7, borderColor: 'rgba(255,255,255,0.14)' },
-      }}
+      sx={{ '& .MuiToggleButton-root': { px: 1.5, py: 0.7, borderColor: 'rgba(255,255,255,0.14)' } }}
     >
       <ToggleButton value="hoje">Hoje</ToggleButton>
       <ToggleButton value="7d">7 dias</ToggleButton>
@@ -522,12 +518,7 @@ export function DashboardPage() {
     </ToggleButtonGroup>
   );
 
-  const pieColors = [
-    t.palette.error.main,
-    t.palette.warning.main,
-    t.palette.success.main,
-    t.palette.text.secondary,
-  ];
+  const pieColors = [t.palette.error.main, t.palette.warning.main, t.palette.success.main, t.palette.text.secondary];
 
   const totalSemVisita = computed.alertasSemVisita.length;
   const semVisitaToShow = showAllSemVisita ? computed.alertasSemVisita : computed.alertasSemVisita.slice(0, 12);
@@ -646,33 +637,7 @@ export function DashboardPage() {
           </Card>
         </Grid>
 
-        <Grid item xs={12}>
-          <Card>
-            <CardHeader title="Taxa de cumprimento por guarnição" subheader="Critério: visita feita pela mesma guarnição (mesmo dia)" />
-            <CardContent sx={{ height: 320 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={computed.taxaPorGuarnicao}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                  <XAxis dataKey="guarnicao" />
-                  <YAxis allowDecimals={false} unit="%" domain={[0, 100]} />
-                  <ReTooltip
-                    formatter={(v: any, n: any) => (n === 'taxa' ? [`${v}%`, 'Taxa'] : [v, n])}
-                    contentStyle={{
-                      background: t.palette.background.paper,
-                      border: `1px solid ${t.palette.divider}`,
-                      borderRadius: 10,
-                      color: t.palette.text.primary,
-                    }}
-                  />
-                  <Legend />
-                  <Bar dataKey="taxa" name="Taxa (%)" fill={t.palette.primary.main} />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* ✅ ALERTA 1: SEM VISITA */}
+        {/* ALERTA 1: SEM VISITA */}
         <Grid item xs={12} lg={6}>
           <Card>
             <CardHeader
@@ -725,7 +690,7 @@ export function DashboardPage() {
           </Card>
         </Grid>
 
-        {/* ✅ ALERTA 2: MEDIDA VENCENDO */}
+        {/* ALERTA 2: MEDIDA VENCENDO */}
         <Grid item xs={12} lg={6}>
           <Card>
             <CardHeader
