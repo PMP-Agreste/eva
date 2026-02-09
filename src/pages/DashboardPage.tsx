@@ -104,7 +104,7 @@ function addDays(d: Date, days: number) {
 }
 
 function makeRange(period: PeriodKey): { start: Date; endExclusive: Date; label: string } {
-  const endExclusive = addDays(startOfToday(), 1); // amanhã 00:00
+  const endExclusive = addDays(startOfToday(), 1);
   if (period === 'hoje') {
     const start = startOfToday();
     return { start, endExclusive, label: 'Hoje' };
@@ -223,8 +223,9 @@ export function DashboardPage() {
   const [loadingAgendas, setLoadingAgendas] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // ✅ controle "ver mais" do alerta
+  // ✅ controles "ver mais"
   const [showAllSemVisita, setShowAllSemVisita] = useState(false);
+  const [showAllVencendo, setShowAllVencendo] = useState(false);
 
   const range = useMemo(() => makeRange(period), [period]);
   const dayKeys = useMemo(() => enumerateDayKeys(range.start, range.endExclusive), [range.start, range.endExclusive]);
@@ -292,7 +293,6 @@ export function DashboardPage() {
     const startMs = range.start.getTime();
     const endMs = range.endExclusive.getTime();
 
-    // Index de visitas por (dia -> assistida -> set(guarnições))
     const idx = new Map<string, Map<string, Set<string>>>();
     const totalVisitasPorDia = new Map<string, number>();
     const visitasGpsPorDia = new Map<string, number>();
@@ -307,13 +307,11 @@ export function DashboardPage() {
       const g = safeStr((v as any).guarnicao);
       const day = dayKeyFromDate(new Date(ms));
 
-      // last visit (para alertas)
       if (aid) {
         const cur = lastVisitaPorAssistida.get(aid);
         if (!cur || ms > cur) lastVisitaPorAssistida.set(aid, ms);
       }
 
-      // Métricas SOMENTE período (para gráficos e KPIs do período)
       if (ms < startMs || ms >= endMs) continue;
 
       totalVisitasPorDia.set(day, (totalVisitasPorDia.get(day) ?? 0) + 1);
@@ -360,7 +358,6 @@ export function DashboardPage() {
       }
     }
 
-    // Série por dia
     const series = dayKeys.map((day) => {
       const planned = plannedPorDia.get(day) ?? [];
       let cumpridasAny = 0;
@@ -408,7 +405,6 @@ export function DashboardPage() {
     const taxaGeral = totais.planejadas ? totais.cumpridas / totais.planejadas : 0;
     const taxaGuarnicao = totais.planejadas ? totais.cumpridasGuarnicao / totais.planejadas : 0;
 
-    // Taxa por guarnição
     const taxaPorGuarnicao = GUARNICOES.map((g) => {
       const planned = plannedPorGuarnicao.get(g) ?? [];
       let ok = 0;
@@ -436,7 +432,6 @@ export function DashboardPage() {
       };
     });
 
-    // Assistidas por risco (ativas)
     const riscoCounts = { Alto: 0, Médio: 0, Baixo: 0, Sem: 0 };
     for (const a of assistidas) {
       const risco = normalizeRisco((a as any).grauRisco ?? (a as any).risco ?? (a as any).nivelRisco);
@@ -447,7 +442,7 @@ export function DashboardPage() {
       .map((k) => ({ name: k === 'Sem' ? 'Sem classificação' : k, value: riscoCounts[k] }))
       .filter((x) => x.value > 0);
 
-    // ✅ Alertas: sem visita há 45 dias (qualquer risco)
+    // ✅ ALERTA 1: Sem visita há 45 dias (qualquer risco)
     const now = Date.now();
     const ms45d = 45 * 24 * 60 * 60 * 1000;
 
@@ -466,6 +461,39 @@ export function DashboardPage() {
       .filter((x) => !x.ultimaVisitaMs || now - (x.ultimaVisitaMs ?? 0) >= ms45d)
       .sort((a, b) => (b.diasSemVisita ?? 0) - (a.diasSemVisita ?? 0));
 
+    // ✅ ALERTA 2: Medida protetiva vencendo em até 7 dias
+    // Ajuste os campos aqui se no seu doc tiver outro nome.
+    const alertasMedidaVencendo = assistidas
+      .map((a) => {
+        const v =
+          (a as any).dataValidadeMedida ??
+          (a as any).validadeMedida ??
+          (a as any).medidaValidade ??
+          (a as any).validadeMedidaProtetiva ??
+          null;
+
+        const ms = parseMillis(v);
+        if (!ms) return null;
+
+        const diff = ms - now;
+        const dias = Math.ceil(diff / (24 * 60 * 60 * 1000));
+
+        return {
+          id: a.id,
+          nome: safeStr((a as any).nomeCompleto) || a.id,
+          validadeMs: ms,
+          diasParaVencer: dias,
+          tipo:
+            safeStr((a as any).tipoMedidaPrincipal) ||
+            safeStr((a as any).tipoMedida) ||
+            safeStr((a as any).medidaTipo) ||
+            '—',
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x)
+      .filter((x) => x.diasParaVencer >= 0 && x.diasParaVencer <= 7)
+      .sort((a, b) => a.diasParaVencer - b.diasParaVencer);
+
     return {
       series,
       totais,
@@ -474,6 +502,7 @@ export function DashboardPage() {
       taxaPorGuarnicao,
       riscoChart,
       alertasSemVisita,
+      alertasMedidaVencendo,
     };
   }, [assistidas, agendas, dayKeys, range.endExclusive, range.start, visitas120]);
 
@@ -500,9 +529,11 @@ export function DashboardPage() {
     t.palette.text.secondary,
   ];
 
-  // ✅ quantos mostrar no alerta
   const totalSemVisita = computed.alertasSemVisita.length;
   const semVisitaToShow = showAllSemVisita ? computed.alertasSemVisita : computed.alertasSemVisita.slice(0, 12);
+
+  const totalVencendo = computed.alertasMedidaVencendo.length;
+  const vencendoToShow = showAllVencendo ? computed.alertasMedidaVencendo : computed.alertasMedidaVencendo.slice(0, 12);
 
   return (
     <Stack spacing={2}>
@@ -641,8 +672,8 @@ export function DashboardPage() {
           </Card>
         </Grid>
 
-        {/* ✅ ALERTA: SEM VISITA (AGORA COM VER MAIS) */}
-        <Grid item xs={12}>
+        {/* ✅ ALERTA 1: SEM VISITA */}
+        <Grid item xs={12} lg={6}>
           <Card>
             <CardHeader
               title="Alertas: Sem visita"
@@ -651,11 +682,7 @@ export function DashboardPage() {
                 <Stack direction="row" spacing={1} alignItems="center">
                   <Chip size="small" label={`${totalSemVisita}`} />
                   {totalSemVisita > 12 ? (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={() => setShowAllSemVisita((s) => !s)}
-                    >
+                    <Button size="small" variant="outlined" onClick={() => setShowAllSemVisita((s) => !s)}>
                       {showAllSemVisita ? 'Ver menos' : `Ver mais (${totalSemVisita})`}
                     </Button>
                   ) : null}
@@ -688,6 +715,54 @@ export function DashboardPage() {
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
                           {a.ultimaVisitaMs ? new Date(a.ultimaVisitaMs).toLocaleDateString('pt-BR') : '—'}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  ))}
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* ✅ ALERTA 2: MEDIDA VENCENDO */}
+        <Grid item xs={12} lg={6}>
+          <Card>
+            <CardHeader
+              title="Alertas: Medida protetiva vencendo"
+              subheader="Regra: vencendo em até 7 dias"
+              action={
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Chip size="small" label={`${totalVencendo}`} />
+                  {totalVencendo > 12 ? (
+                    <Button size="small" variant="outlined" onClick={() => setShowAllVencendo((s) => !s)}>
+                      {showAllVencendo ? 'Ver menos' : `Ver mais (${totalVencendo})`}
+                    </Button>
+                  ) : null}
+                </Stack>
+              }
+            />
+            <CardContent>
+              {totalVencendo === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  Sem alertas no momento.
+                </Typography>
+              ) : (
+                <Stack spacing={1} divider={<Divider flexItem />}>
+                  {vencendoToShow.map((a) => (
+                    <Box key={a.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 800 }} noWrap>
+                          {a.nome}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {a.tipo}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ textAlign: 'right' }}>
+                        <Typography sx={{ fontWeight: 900 }}>{a.diasParaVencer} dias</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {new Date(a.validadeMs).toLocaleDateString('pt-BR')}
                         </Typography>
                       </Box>
                     </Box>
