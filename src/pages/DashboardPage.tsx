@@ -130,7 +130,6 @@ function enumerateDayKeys(start: Date, endExclusive: Date): string[] {
 }
 
 function formatDayLabel(dayKey: string) {
-  // YYYY-MM-DD => DD/MM
   const [, m, d] = dayKey.split('-');
   return `${d}/${m}`;
 }
@@ -160,7 +159,6 @@ async function fetchAssistidasAtivas(): Promise<Assistida[]> {
 }
 
 async function fetchAgendasByDataDiaRange(startKey: string, endKey: string): Promise<AgendaRow[]> {
-  // dataDia (string "YYYY-MM-DD") é ideal para range
   const q = query(
     collection(db, 'agendas_planejadas'),
     where('dataDia', '>=', startKey),
@@ -173,7 +171,6 @@ async function fetchAgendasByDataDiaRange(startKey: string, endKey: string): Pro
 }
 
 async function fetchVisitasSince(ms: number): Promise<VisitaRow[]> {
-  // Robusto para bancos onde dataHora possa ter sido salva como number OU Timestamp.
   const col = collection(db, 'visitas');
 
   const qNum = query(col, where('dataHora', '>=', ms), orderBy('dataHora', 'desc'), limit(12000));
@@ -226,6 +223,9 @@ export function DashboardPage() {
   const [loadingAgendas, setLoadingAgendas] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // ✅ controle "ver mais" do alerta
+  const [showAllSemVisita, setShowAllSemVisita] = useState(false);
+
   const range = useMemo(() => makeRange(period), [period]);
   const dayKeys = useMemo(() => enumerateDayKeys(range.start, range.endExclusive), [range.start, range.endExclusive]);
   const endInclusiveKey = useMemo(
@@ -233,7 +233,6 @@ export function DashboardPage() {
     [dayKeys, range.start],
   );
 
-  // Carrega assistidas (ativas) e visitas (últimos 120 dias) 1 vez.
   useEffect(() => {
     let cancelled = false;
 
@@ -264,7 +263,6 @@ export function DashboardPage() {
     };
   }, []);
 
-  // Carrega agendas conforme período.
   useEffect(() => {
     let cancelled = false;
 
@@ -293,12 +291,6 @@ export function DashboardPage() {
   const computed = useMemo(() => {
     const startMs = range.start.getTime();
     const endMs = range.endExclusive.getTime();
-
-    const visitasPeriodo = visitas120.filter((v) => {
-      const ms = parseMillis((v as any).dataHora);
-      if (ms == null) return false;
-      return ms >= startMs && ms < endMs;
-    });
 
     // Index de visitas por (dia -> assistida -> set(guarnições))
     const idx = new Map<string, Map<string, Set<string>>>();
@@ -416,7 +408,7 @@ export function DashboardPage() {
     const taxaGeral = totais.planejadas ? totais.cumpridas / totais.planejadas : 0;
     const taxaGuarnicao = totais.planejadas ? totais.cumpridasGuarnicao / totais.planejadas : 0;
 
-    // Taxa por guarnição (critério: visita pela MESMA guarnição)
+    // Taxa por guarnição
     const taxaPorGuarnicao = GUARNICOES.map((g) => {
       const planned = plannedPorGuarnicao.get(g) ?? [];
       let ok = 0;
@@ -455,10 +447,8 @@ export function DashboardPage() {
       .map((k) => ({ name: k === 'Sem' ? 'Sem classificação' : k, value: riscoCounts[k] }))
       .filter((x) => x.value > 0);
 
-    // Alertas
+    // ✅ Alertas: sem visita há 45 dias (qualquer risco)
     const now = Date.now();
-
-    // Regra: sem visita há 45 dias (inclui "sem visitas" / última visita desconhecida)
     const ms45d = 45 * 24 * 60 * 60 * 1000;
 
     const alertasSemVisita = assistidas
@@ -474,31 +464,9 @@ export function DashboardPage() {
         };
       })
       .filter((x) => !x.ultimaVisitaMs || now - (x.ultimaVisitaMs ?? 0) >= ms45d)
-      .sort((a, b) => (b.diasSemVisita ?? 0) - (a.diasSemVisita ?? 0))
-      .slice(0, 50);
-
-    const alertasMedidaVencendo = assistidas
-      .map((a) => {
-        const v = (a as any).dataValidadeMedida ?? (a as any).validadeMedida ?? null;
-        const ms = parseMillis(v);
-        if (!ms) return null;
-        const diff = ms - now;
-        const dias = Math.ceil(diff / (24 * 60 * 60 * 1000));
-        return {
-          id: a.id,
-          nome: safeStr((a as any).nomeCompleto) || a.id,
-          validadeMs: ms,
-          diasParaVencer: dias,
-          tipo: safeStr((a as any).tipoMedidaPrincipal) || safeStr((a as any).tipoMedida) || '—',
-        };
-      })
-      .filter((x): x is NonNullable<typeof x> => !!x)
-      .filter((x) => x.diasParaVencer >= 0 && x.diasParaVencer <= 7)
-      .sort((a, b) => a.diasParaVencer - b.diasParaVencer)
-      .slice(0, 50);
+      .sort((a, b) => (b.diasSemVisita ?? 0) - (a.diasSemVisita ?? 0));
 
     return {
-      visitasPeriodo,
       series,
       totais,
       taxaGeral,
@@ -506,7 +474,6 @@ export function DashboardPage() {
       taxaPorGuarnicao,
       riscoChart,
       alertasSemVisita,
-      alertasMedidaVencendo,
     };
   }, [assistidas, agendas, dayKeys, range.endExclusive, range.start, visitas120]);
 
@@ -527,11 +494,15 @@ export function DashboardPage() {
   );
 
   const pieColors = [
-    t.palette.error.main, // Alto
-    t.palette.warning.main, // Médio
-    t.palette.success.main, // Baixo
-    t.palette.text.secondary, // Sem
+    t.palette.error.main,
+    t.palette.warning.main,
+    t.palette.success.main,
+    t.palette.text.secondary,
   ];
+
+  // ✅ quantos mostrar no alerta
+  const totalSemVisita = computed.alertasSemVisita.length;
+  const semVisitaToShow = showAllSemVisita ? computed.alertasSemVisita : computed.alertasSemVisita.slice(0, 12);
 
   return (
     <Stack spacing={2}>
@@ -563,45 +534,22 @@ export function DashboardPage() {
         </CardContent>
       </Card>
 
-      {/* KPIs */}
       <Grid container spacing={2}>
         <Grid item xs={12} sm={6} md={3}>
-          <KPICard
-            title="Planejadas no período"
-            value={computed.totais.planejadas}
-            helper={`Base: agendas_planejadas (${range.label})`}
-            action={<Chip size="small" label={loadingAgendas ? '…' : 'ok'} />}
-          />
+          <KPICard title="Planejadas no período" value={computed.totais.planejadas} helper={`Base: agendas_planejadas (${range.label})`} />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
-          <KPICard
-            title="Cumpridas (geral)"
-            value={`${computed.totais.cumpridas} • ${(computed.taxaGeral * 100).toFixed(1)}%`}
-            helper="Qualquer guarnição"
-          />
+          <KPICard title="Cumpridas (geral)" value={`${computed.totais.cumpridas} • ${(computed.taxaGeral * 100).toFixed(1)}%`} helper="Qualquer guarnição" />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
-          <KPICard
-            title="Cumpridas (guarnição)"
-            value={`${computed.totais.cumpridasGuarnicao} • ${(computed.taxaGuarnicao * 100).toFixed(1)}%`}
-            helper="Mesma guarnição"
-          />
+          <KPICard title="Cumpridas (guarnição)" value={`${computed.totais.cumpridasGuarnicao} • ${(computed.taxaGuarnicao * 100).toFixed(1)}%`} helper="Mesma guarnição" />
         </Grid>
         <Grid item xs={12} sm={6} md={3}>
-          <KPICard
-            title="Visitas registradas"
-            value={computed.totais.visitas}
-            helper={
-              <span>
-                GPS: <b>{computed.totais.gps}</b> • Descumprimento: <b>{computed.totais.desc}</b>
-              </span>
-            }
-          />
+          <KPICard title="Visitas registradas" value={computed.totais.visitas} helper={<span>GPS: <b>{computed.totais.gps}</b> • Desc: <b>{computed.totais.desc}</b></span>} />
         </Grid>
       </Grid>
 
       <Grid container spacing={2}>
-        {/* Série por dia */}
         <Grid item xs={12} lg={8}>
           <Card>
             <CardHeader title="Evolução por dia" subheader="Planejadas x Cumpridas x Visitas (registradas)" />
@@ -622,21 +570,13 @@ export function DashboardPage() {
                   <Legend />
                   <Line type="monotone" dataKey="planejadas" stroke={t.palette.secondary.main} strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="cumpridas" stroke={t.palette.primary.main} strokeWidth={2} dot={false} />
-                  <Line
-                    type="monotone"
-                    dataKey="visitas"
-                    stroke={t.palette.text.secondary}
-                    strokeWidth={2}
-                    dot={false}
-                    opacity={0.65}
-                  />
+                  <Line type="monotone" dataKey="visitas" stroke={t.palette.text.secondary} strokeWidth={2} dot={false} opacity={0.65} />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>
         </Grid>
 
-        {/* Risco */}
         <Grid item xs={12} lg={4}>
           <Card>
             <CardHeader
@@ -663,14 +603,7 @@ export function DashboardPage() {
                       }}
                     />
                     <Legend />
-                    <Pie
-                      data={computed.riscoChart}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius="55%"
-                      outerRadius="80%"
-                      paddingAngle={2}
-                    >
+                    <Pie data={computed.riscoChart} dataKey="value" nameKey="name" innerRadius="55%" outerRadius="80%" paddingAngle={2}>
                       {computed.riscoChart.map((_, i) => (
                         <Cell key={`cell-${i}`} fill={pieColors[i % pieColors.length]} />
                       ))}
@@ -682,13 +615,9 @@ export function DashboardPage() {
           </Card>
         </Grid>
 
-        {/* Taxa por guarnição */}
         <Grid item xs={12}>
           <Card>
-            <CardHeader
-              title="Taxa de cumprimento por guarnição"
-              subheader="Critério: visita feita pela mesma guarnição (mesmo dia)"
-            />
+            <CardHeader title="Taxa de cumprimento por guarnição" subheader="Critério: visita feita pela mesma guarnição (mesmo dia)" />
             <CardContent sx={{ height: 320 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={computed.taxaPorGuarnicao}>
@@ -712,22 +641,35 @@ export function DashboardPage() {
           </Card>
         </Grid>
 
-        {/* Alertas */}
-        <Grid item xs={12} lg={6}>
+        {/* ✅ ALERTA: SEM VISITA (AGORA COM VER MAIS) */}
+        <Grid item xs={12}>
           <Card>
             <CardHeader
               title="Alertas: Sem visita"
               subheader="Regra: assistidas sem visita há 45 dias (qualquer risco)"
-              action={<Chip size="small" label={`${computed.alertasSemVisita.length}`} />}
+              action={
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Chip size="small" label={`${totalSemVisita}`} />
+                  {totalSemVisita > 12 ? (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => setShowAllSemVisita((s) => !s)}
+                    >
+                      {showAllSemVisita ? 'Ver menos' : `Ver mais (${totalSemVisita})`}
+                    </Button>
+                  ) : null}
+                </Stack>
+              }
             />
             <CardContent>
-              {computed.alertasSemVisita.length === 0 ? (
+              {totalSemVisita === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   Sem alertas no momento.
                 </Typography>
               ) : (
                 <Stack spacing={1} divider={<Divider flexItem />}>
-                  {computed.alertasSemVisita.slice(0, 12).map((a) => (
+                  {semVisitaToShow.map((a) => (
                     <Box key={a.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
                       <Box sx={{ minWidth: 0 }}>
                         <Typography sx={{ fontWeight: 800 }} noWrap>
@@ -750,54 +692,6 @@ export function DashboardPage() {
                       </Box>
                     </Box>
                   ))}
-                  {computed.alertasSemVisita.length > 12 ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Mostrando 12 de {computed.alertasSemVisita.length}. (Podemos criar uma tela “Alertas” dedicada.)
-                    </Typography>
-                  ) : null}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid item xs={12} lg={6}>
-          <Card>
-            <CardHeader
-              title="Alertas: Medida protetiva vencendo"
-              subheader="Regra: vencendo em até 7 dias"
-              action={<Chip size="small" label={`${computed.alertasMedidaVencendo.length}`} />}
-            />
-            <CardContent>
-              {computed.alertasMedidaVencendo.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">
-                  Sem alertas no momento.
-                </Typography>
-              ) : (
-                <Stack spacing={1} divider={<Divider flexItem />}>
-                  {computed.alertasMedidaVencendo.slice(0, 12).map((a) => (
-                    <Box key={a.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography sx={{ fontWeight: 800 }} noWrap>
-                          {a.nome}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {a.tipo}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ textAlign: 'right' }}>
-                        <Typography sx={{ fontWeight: 900 }}>{a.diasParaVencer} dias</Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {new Date(a.validadeMs).toLocaleDateString('pt-BR')}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  ))}
-                  {computed.alertasMedidaVencendo.length > 12 ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Mostrando 12 de {computed.alertasMedidaVencendo.length}. (Podemos criar uma tela “Alertas” dedicada.)
-                    </Typography>
-                  ) : null}
                 </Stack>
               )}
             </CardContent>
