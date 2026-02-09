@@ -457,10 +457,11 @@ export function DashboardPage() {
 
     // Alertas
     const now = Date.now();
-    const ms7d = 7 * 24 * 60 * 60 * 1000;
 
-    const alertasAltoSemVisita = assistidas
-      .filter((a) => normalizeRisco((a as any).grauRisco) === 'Alto')
+    // Regra: sem visita há 45 dias (inclui "sem visitas" / última visita desconhecida)
+    const ms45d = 45 * 24 * 60 * 60 * 1000;
+
+    const alertasSemVisita = assistidas
       .map((a) => {
         const last = lastVisitaPorAssistida.get(a.id) ?? 0;
         const dias = last ? Math.floor((now - last) / (24 * 60 * 60 * 1000)) : 9999;
@@ -469,9 +470,10 @@ export function DashboardPage() {
           nome: safeStr((a as any).nomeCompleto) || a.id,
           ultimaVisitaMs: last || null,
           diasSemVisita: dias,
+          risco: normalizeRisco((a as any).grauRisco ?? (a as any).risco ?? (a as any).nivelRisco),
         };
       })
-      .filter((x) => !x.ultimaVisitaMs || now - (x.ultimaVisitaMs ?? 0) >= ms7d)
+      .filter((x) => !x.ultimaVisitaMs || now - (x.ultimaVisitaMs ?? 0) >= ms45d)
       .sort((a, b) => (b.diasSemVisita ?? 0) - (a.diasSemVisita ?? 0))
       .slice(0, 50);
 
@@ -503,7 +505,7 @@ export function DashboardPage() {
       taxaGuarnicao,
       taxaPorGuarnicao,
       riscoChart,
-      alertasAltoSemVisita,
+      alertasSemVisita,
       alertasMedidaVencendo,
     };
   }, [assistidas, agendas, dayKeys, range.endExclusive, range.start, visitas120]);
@@ -714,18 +716,18 @@ export function DashboardPage() {
         <Grid item xs={12} lg={6}>
           <Card>
             <CardHeader
-              title="Alertas: Alto risco sem visita"
-              subheader="Regra: alto risco sem visita há 7 dias"
-              action={<Chip size="small" label={`${computed.alertasAltoSemVisita.length}`} />}
+              title="Alertas: Sem visita"
+              subheader="Regra: assistidas sem visita há 45 dias (qualquer risco)"
+              action={<Chip size="small" label={`${computed.alertasSemVisita.length}`} />}
             />
             <CardContent>
-              {computed.alertasAltoSemVisita.length === 0 ? (
+              {computed.alertasSemVisita.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   Sem alertas no momento.
                 </Typography>
               ) : (
                 <Stack spacing={1} divider={<Divider flexItem />}>
-                  {computed.alertasAltoSemVisita.slice(0, 12).map((a) => (
+                  {computed.alertasSemVisita.slice(0, 12).map((a) => (
                     <Box key={a.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
                       <Box sx={{ minWidth: 0 }}>
                         <Typography sx={{ fontWeight: 800 }} noWrap>
@@ -733,6 +735,9 @@ export function DashboardPage() {
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
                           ID: {a.id}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Risco: {a.risco === 'Sem' ? 'Sem classificação' : a.risco}
                         </Typography>
                       </Box>
                       <Box sx={{ textAlign: 'right' }}>
@@ -745,9 +750,9 @@ export function DashboardPage() {
                       </Box>
                     </Box>
                   ))}
-                  {computed.alertasAltoSemVisita.length > 12 ? (
+                  {computed.alertasSemVisita.length > 12 ? (
                     <Typography variant="caption" color="text.secondary">
-                      Mostrando 12 de {computed.alertasAltoSemVisita.length}. (Podemos criar uma tela “Alertas” dedicada.)
+                      Mostrando 12 de {computed.alertasSemVisita.length}. (Podemos criar uma tela “Alertas” dedicada.)
                     </Typography>
                   ) : null}
                 </Stack>
@@ -799,18 +804,6 @@ export function DashboardPage() {
           </Card>
         </Grid>
       </Grid>
-      
-      <Card>
-        <CardHeader title="Próximos incrementos" subheader="teste" />
-        <CardContent>
-          <Stack spacing={1} sx={{ color: 'text.secondary' }}>
-            <Typography variant="body2">1) Tela “Alertas” com filtros e exportação (CSV) para auditoria.</Typography>
-            <Typography variant="body2">2) Página “Mapa” (Leaflet) com Cluster + Heatmap + filtros por período/guarnição/risco.</Typography>
-            <Typography variant="body2">3) Índices Firestore.</Typography>
-          </Stack>
-        </CardContent>
-      </Card>
     </Stack>
   );
-
 }
