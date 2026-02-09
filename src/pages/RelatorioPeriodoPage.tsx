@@ -378,12 +378,9 @@ export default function RelatorioPeriodoPage() {
             <Stack direction="row" spacing={1} alignItems="center">
               <AssessmentOutlinedIcon />
               <Typography variant="h5" sx={{ fontWeight: 900 }}>
-                Relatório por Período (Firestore)
+                Relatório por Período
               </Typography>
             </Stack>
-            <Typography variant="body2" color="text.secondary">
-              Fonte: coleção <b>relatorios_servico</b> (campos: dataDia, guarnicaoKey, resumoAuto, acoes, etc.).
-            </Typography>
           </Box>
 
           <Stack direction="row" spacing={1}>
@@ -576,7 +573,6 @@ export default function RelatorioPeriodoPage() {
         </Grid>
 
         <Card>
-          <CardHeader title="Ações no período (somatório)" subheader="Baseado no array 'acoes' de cada relatório." />
           <CardContent>
             {acoesAgg.length === 0 ? (
               <Alert severity="info">Nenhuma ação encontrada no período/guarnição selecionados.</Alert>
@@ -605,7 +601,7 @@ export default function RelatorioPeriodoPage() {
         </Card>
 
         <Card>
-          <CardHeader title="Relatórios encontrados" subheader="Detalhe por documento (campos do Firestore)." />
+          <CardHeader title="Relatórios encontrados"/>
           <CardContent>
             {filtered.length === 0 ? (
               <Alert severity="warning">Nenhum relatório encontrado no período selecionado.</Alert>
