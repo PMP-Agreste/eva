@@ -624,7 +624,7 @@ export function RelatorioPeriodoPage() {
                     <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
                       Agenda (não real)
                     </Box>
-                  </Box component="tr">
+                  <Box component="tr">
                 </Box>
                 <Box component="tbody">
                   {days.map((day) =>
