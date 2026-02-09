@@ -194,7 +194,7 @@ function addMetric(a: Metric, b: Metric): Metric {
   };
 }
 
-export function RelatorioPeriodoPage() {
+export default function RelatorioPeriodoPage() {
   // default: últimos 7 dias
   const [startStr, setStartStr] = useState(() => {
     const d = new Date();
@@ -624,7 +624,7 @@ export function RelatorioPeriodoPage() {
                     <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
                       Agenda (não real)
                     </Box>
-                  <Box component="tr">
+                  </Box>
                 </Box>
                 <Box component="tbody">
                   {days.map((day) =>
