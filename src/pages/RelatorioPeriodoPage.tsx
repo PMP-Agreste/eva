@@ -1,3 +1,4 @@
+// src/pages/RelatorioPeriodoPage.tsx
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
@@ -17,6 +18,7 @@ import {
 import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import DownloadIcon from "@mui/icons-material/Download";
 import { collection, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 
@@ -133,7 +135,6 @@ function aggregateAcoes(rows: RelatorioServico[]) {
       item.quantidade += qtd;
 
       if (det) {
-        // guarda só alguns exemplos para não poluir
         if (item.exemplosDetalhe.length < 6 && !item.exemplosDetalhe.includes(det)) {
           item.exemplosDetalhe.push(det);
         }
@@ -141,7 +142,6 @@ function aggregateAcoes(rows: RelatorioServico[]) {
     }
   }
 
-  // ordena por quantidade desc
   return Array.from(map.values()).sort((a, b) => b.quantidade - a.quantidade);
 }
 
@@ -159,7 +159,6 @@ async function fetchRelatoriosByPeriodo(startYmd: string, endYmd: string): Promi
 }
 
 export default function RelatorioPeriodoPage() {
-  // defaults: últimos 7 dias
   const [startStr, setStartStr] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 6);
@@ -196,9 +195,8 @@ export default function RelatorioPeriodoPage() {
   }, [startStr, endStr]);
 
   const filtered = useMemo(() => {
-    const base = rows;
-    if (guKey === "TODAS") return base;
-    return base.filter((r) => safeStr(r.guarnicaoKey) === guKey);
+    if (guKey === "TODAS") return rows;
+    return rows.filter((r) => safeStr(r.guarnicaoKey) === guKey);
   }, [rows, guKey]);
 
   const totals = useMemo(() => sumResumo(filtered), [filtered]);
@@ -241,9 +239,7 @@ export default function RelatorioPeriodoPage() {
       lines.push("AÇÕES (somatório por tipo):");
       for (const a of acoesAgg) {
         lines.push(`- ${a.tipo}: ${a.quantidade}`);
-        if (a.exemplosDetalhe.length) {
-          lines.push(`  Ex.: ${a.exemplosDetalhe.join(" | ")}`);
-        }
+        if (a.exemplosDetalhe.length) lines.push(`  Ex.: ${a.exemplosDetalhe.join(" | ")}`);
       }
       lines.push("");
     }
@@ -257,9 +253,9 @@ export default function RelatorioPeriodoPage() {
         const s = r.resumoAuto ?? {};
         lines.push(`• ${g}${cmd ? ` | CMT: ${cmd}` : ""}${vtr ? ` | VTR: ${vtr}` : ""}`);
         lines.push(
-          `  - Visitas: ${safeNum(s.visitasTotal)} | Assistidas únicas: ${safeNum(
-            s.assistidasUnicas
-          )} | Desc.: ${safeNum(s.descumprimentos)}`
+          `  - Visitas: ${safeNum(s.visitasTotal)} | Assistidas únicas: ${safeNum(s.assistidasUnicas)} | Desc.: ${safeNum(
+            s.descumprimentos
+          )}`
         );
         lines.push(
           `  - Agenda: plan ${safeNum(s.agendaPlanejada)} | real ${safeNum(s.agendaRealizada)} | não real ${safeNum(
@@ -288,6 +284,89 @@ export default function RelatorioPeriodoPage() {
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
+    }
+  }
+
+  async function exportXlsx() {
+    try {
+      const XLSX = await import("xlsx");
+
+      const periodoLabel = `${startStr}_a_${endStr}`;
+      const guLabel = guKey === "TODAS" ? "TODAS" : guKey;
+
+      // Aba RELATORIOS (1 por doc)
+      const relRows = filtered.map((r) => {
+        const s = r.resumoAuto ?? {};
+        return {
+          id: r.id,
+          dataDia: r.dataDia ?? "",
+          dataServico: r.dataServico ?? null,
+          guarnicao: r.guarnicao ?? "",
+          guarnicaoKey: r.guarnicaoKey ?? "",
+          comandanteGuarnicao: r.comandanteGuarnicao ?? "",
+          efetivo: r.efetivo ?? "",
+          prefixoViatura: r.prefixoViatura ?? "",
+          placaViatura: r.placaViatura ?? "",
+          kmInicial: r.kmInicial ?? null,
+          kmFinal: r.kmFinal ?? null,
+          resumoConfere: r.resumoConfere ?? null,
+          justificativaDivergencia: r.justificativaDivergencia ?? "",
+          visitasTotal: Number(s.visitasTotal ?? 0),
+          assistidasUnicas: Number(s.assistidasUnicas ?? 0),
+          descumprimentos: Number(s.descumprimentos ?? 0),
+          agendaPlanejada: Number(s.agendaPlanejada ?? 0),
+          agendaRealizada: Number(s.agendaRealizada ?? 0),
+          agendaNaoRealizada: Number(s.agendaNaoRealizada ?? 0),
+          observacoesGerais: r.observacoesGerais ?? "",
+          pendenciasProximoServico: r.pendenciasProximoServico ?? "",
+          problemasOperacionais: r.problemasOperacionais ?? "",
+          criadoEm: r.criadoEm ?? null,
+          atualizadoEm: r.atualizadoEm ?? null,
+        };
+      });
+
+      // Aba ACOES (1 por ação)
+      const acoesRows: any[] = [];
+      for (const r of filtered) {
+        const acoes = r.acoes ?? [];
+        for (const a of acoes) {
+          acoesRows.push({
+            relatorioId: r.id,
+            dataDia: r.dataDia ?? "",
+            guarnicaoKey: r.guarnicaoKey ?? "",
+            guarnicao: r.guarnicao ?? "",
+            tipo: a?.tipo ?? "",
+            quantidade: Number(a?.quantidade ?? 0),
+            detalhe: a?.detalhe ?? "",
+          });
+        }
+      }
+
+      // Aba RESUMO_PERIODO
+      const resumoRows = [
+        { chave: "PeriodoInicio", valor: startStr },
+        { chave: "PeriodoFim", valor: endStr },
+        { chave: "GuarnicaoFiltro", valor: guLabel },
+        { chave: "RelatoriosEncontrados", valor: filtered.length },
+        { chave: "NaoConfere", valor: filtered.filter((r) => r.resumoConfere === false).length },
+        { chave: "VisitasTotal", valor: totals.visitasTotal },
+        { chave: "AssistidasUnicas_Somatorio", valor: totals.assistidasUnicas },
+        { chave: "Descumprimentos", valor: totals.descumprimentos },
+        { chave: "AgendaPlanejada", valor: totals.agendaPlanejada },
+        { chave: "AgendaRealizada", valor: totals.agendaRealizada },
+        { chave: "AgendaNaoRealizada", valor: totals.agendaNaoRealizada },
+      ];
+
+      const wb = XLSX.utils.book_new();
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(relRows), "Relatorios");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(acoesRows), "Acoes");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumoRows), "Resumo_Periodo");
+
+      const filename = `relatorios_servico_${periodoLabel}_${guLabel}.xlsx`;
+      XLSX.writeFile(wb, filename);
+    } catch (e: any) {
+      setError(e?.message ?? "Falha ao exportar XLSX.");
     }
   }
 
@@ -375,13 +454,18 @@ export default function RelatorioPeriodoPage() {
                   <Button variant="contained" startIcon={<RefreshIcon />} disabled={!canLoad || busy} onClick={load}>
                     {busy ? "Carregando..." : "Atualizar"}
                   </Button>
+
+                  <Button variant="outlined" startIcon={<ContentCopyIcon />} disabled={!canLoad || busy} onClick={copyResumo}>
+                    Copiar
+                  </Button>
+
                   <Button
                     variant="outlined"
-                    startIcon={<ContentCopyIcon />}
-                    disabled={!canLoad || busy}
-                    onClick={copyResumo}
+                    startIcon={<DownloadIcon />}
+                    disabled={!canLoad || busy || filtered.length === 0}
+                    onClick={exportXlsx}
                   >
-                    Copiar
+                    Exportar XLSX
                   </Button>
                 </Stack>
               </Grid>
@@ -437,11 +521,7 @@ export default function RelatorioPeriodoPage() {
 
           <Grid item xs={12} sm={4} md={2}>
             <Card>
-              <CardHeader
-                titleTypographyProps={{ variant: "body2", color: "text.secondary" }}
-                title="Assistidas únicas"
-                sx={{ pb: 0.5 }}
-              />
+              <CardHeader titleTypographyProps={{ variant: "body2", color: "text.secondary" }} title="Assistidas únicas" sx={{ pb: 0.5 }} />
               <CardContent sx={{ pt: 0 }}>
                 <Typography variant="h5" sx={{ fontWeight: 900 }}>
                   {totals.assistidasUnicas}
@@ -496,10 +576,7 @@ export default function RelatorioPeriodoPage() {
         </Grid>
 
         <Card>
-          <CardHeader
-            title="Ações no período (somatório)"
-            subheader="Baseado no array 'acoes' de cada relatório."
-          />
+          <CardHeader title="Ações no período (somatório)" subheader="Baseado no array 'acoes' de cada relatório." />
           <CardContent>
             {acoesAgg.length === 0 ? (
               <Alert severity="info">Nenhuma ação encontrada no período/guarnição selecionados.</Alert>
@@ -528,10 +605,7 @@ export default function RelatorioPeriodoPage() {
         </Card>
 
         <Card>
-          <CardHeader
-            title="Relatórios encontrados"
-            subheader="Detalhe por documento (campos do Firestore)."
-          />
+          <CardHeader title="Relatórios encontrados" subheader="Detalhe por documento (campos do Firestore)." />
           <CardContent>
             {filtered.length === 0 ? (
               <Alert severity="warning">Nenhum relatório encontrado no período selecionado.</Alert>
@@ -542,7 +616,6 @@ export default function RelatorioPeriodoPage() {
                   const gKey = safeStr(r.guarnicaoKey) || "SEM_KEY";
                   const g = safeStr(r.guarnicao) || fmtGuKey(gKey);
                   const titulo = `${safeStr(r.dataDia)} | ${gKey}`;
-
                   const vtr = `${safeStr(r.prefixoViatura)} ${safeStr(r.placaViatura)}`.trim();
 
                   return (
@@ -639,13 +712,22 @@ export default function RelatorioPeriodoPage() {
                             <Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
                               <Box component="thead">
                                 <Box component="tr">
-                                  <Box component="th" sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                  <Box
+                                    component="th"
+                                    sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}
+                                  >
                                     Tipo
                                   </Box>
-                                  <Box component="th" sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                  <Box
+                                    component="th"
+                                    sx={{ textAlign: "right", p: 1, borderBottom: "1px solid", borderColor: "divider" }}
+                                  >
                                     Qtd
                                   </Box>
-                                  <Box component="th" sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
+                                  <Box
+                                    component="th"
+                                    sx={{ textAlign: "left", p: 1, borderBottom: "1px solid", borderColor: "divider" }}
+                                  >
                                     Detalhe
                                   </Box>
                                 </Box>
@@ -656,7 +738,10 @@ export default function RelatorioPeriodoPage() {
                                     <Box component="td" sx={{ p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
                                       {safeStr(a.tipo) || "-"}
                                     </Box>
-                                    <Box component="td" sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}>
+                                    <Box
+                                      component="td"
+                                      sx={{ p: 1, textAlign: "right", borderBottom: "1px solid", borderColor: "divider" }}
+                                    >
                                       {safeNum(a.quantidade)}
                                     </Box>
                                     <Box component="td" sx={{ p: 1, borderBottom: "1px solid", borderColor: "divider" }}>
@@ -669,7 +754,7 @@ export default function RelatorioPeriodoPage() {
                           </Box>
                         )}
 
-                        {(r.observacoesGerais || r.pendenciasProximoServico || r.problemasOperacionais) ? (
+                        {r.observacoesGerais || r.pendenciasProximoServico || r.problemasOperacionais ? (
                           <>
                             <Divider sx={{ my: 2 }} />
                             <Grid container spacing={1.5}>
