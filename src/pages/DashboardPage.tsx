@@ -14,7 +14,6 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Typography,
-  useTheme,
 } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { Timestamp } from 'firebase/firestore';
@@ -55,7 +54,6 @@ type PeriodKey = 'hoje' | '7d' | '30d';
 const GUARNICOES = ['PMP Alfa', 'PMP Bravo', 'PMP Charlie', 'PMP Delta'] as const;
 
 const ROSE = '#F472B6';
-const ROSE_DARK = '#EC4899';
 const BLUE = '#60A5FA';
 
 type AgendaRow = AgendaPlanejada & {
@@ -357,7 +355,6 @@ function AlertRow({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
-  const t = useTheme();
 
   const [period, setPeriod] = useState<PeriodKey>('7d');
   const [assistidas, setAssistidas] = useState<Assistida[]>([]);
@@ -1071,7 +1068,6 @@ export function DashboardPage() {
               ) : (
                 <Stack divider={<Divider sx={{ borderColor: 'rgba(255,255,255,0.05)' }} />}>
                   {vencendoToShow.map((a) => {
-                    const urgColor = a.diasParaVencer <= 2 ? '#F87171' : a.diasParaVencer <= 4 ? '#FBBF24' : '#94A3B8';
                     return (
                       <AlertRow
                         key={a.id}
