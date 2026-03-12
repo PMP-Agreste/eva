@@ -277,20 +277,6 @@ export function LoginPage() {
             gap: 1,
           }}
         >
-          <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', lineHeight: 1.6 }}>
-            O acesso requer perfil cadastrado com{' '}
-            <Box component="code" sx={{ fontFamily: "'DM Mono', monospace", fontSize: '0.7rem', background: 'rgba(255,255,255,0.07)', px: 0.5, py: 0.25, borderRadius: '4px' }}>
-              ativo=true
-            </Box>{' '}
-            e{' '}
-            <Box component="code" sx={{ fontFamily: "'DM Mono', monospace", fontSize: '0.7rem', background: 'rgba(255,255,255,0.07)', px: 0.5, py: 0.25, borderRadius: '4px' }}>
-              role=admin
-            </Box>{' '}
-            ou{' '}
-            <Box component="code" sx={{ fontFamily: "'DM Mono', monospace", fontSize: '0.7rem', background: 'rgba(255,255,255,0.07)', px: 0.5, py: 0.25, borderRadius: '4px' }}>
-              gestor
-            </Box>.
-          </Typography>
         </Box>
       </Box>
     </Box>
